@@ -44,6 +44,8 @@ class Trainer(Finetune):
         self.test_accs = []
         self.exemplar = Exemplar(self.max_size, self.total_cls)
         self.test_s=[]
+        self.memory_val_list=[]
+        self.previous_model=None
         total_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         logger.info("Solver total trainable parameters : ", total_params)
 
@@ -95,20 +97,21 @@ class Trainer(Finetune):
         self.exemplar.update(self.total_cls // self.batch_num, (self.get_x_and_y(self.train_list)),
                              (self.get_x_and_y(self.val_list)))
         self.seen_cls = self.exemplar.get_cur_cls()
+        self.update_val_list()
         val_xs, val_ys = self.exemplar.get_exemplar_val()
         # val_bias_data= self.get_dataloader(self.batch_size, self.n_woker, self.get_list(val_xs,val_ys), None)[0]
-        val_bias_data= self.get_dataloader(self.batch_size, self.n_woker, self.memory_list, None)[0]
+        val_bias_data= self.get_dataloader(self.batch_size, self.n_woker, self.memory_val_list, None)[0]
         self.seen_cls =self.seen_cls+20;
         test_acc = []
         eval_dict = dict()
         for epoch in range(self.n_epoch):
             logger.info("---" * 50)
-            logger.info("Epoch"+" "+ str(epoch))
+            logger.info("Epoch" + " " + str(epoch))
             logger.info("start stage1 in this epoch:")
             logger.info(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
             scheduler.step()
             cur_lr = self.get_lr(optimizer)
-            logger.info("Current Learning Rate : "+str(cur_lr))
+            logger.info("Current Learning Rate : " + str(cur_lr))
             self.model.train()
             for _ in range(len(self.bias_layers)):
                 self.bias_layers[_].eval()
@@ -143,6 +146,7 @@ class Trainer(Finetune):
         logger.info(self.test_accs)
 
         eval_dict = self.evaluation(test_loader=test_data, criterion=self.criterion)
+        logger.info(eval_dict)
         return test_acc,eval_dict
 
     def stage1_distill(self, train_data, criterion, optimizer):
@@ -216,8 +220,9 @@ class Trainer(Finetune):
         out4 = self.bias_layer4(in4)
         out5 = self.bias_layer5(in5)
         return torch.cat([out1, out2, out3, out4, out5], dim = 1)
+
     def test(self, testdata):
-        logger.info("test data number : "+" "+ str(len(testdata)))
+        logger.info("test data number : " + " " + str(len(testdata)))
         self.model.eval()
         count = 0
         correct = 0
@@ -227,11 +232,60 @@ class Trainer(Finetune):
             label = data['label'].to(self.device)
             p = self.model(image)
             p = self.bias_forward(p)
-            pred = p[:,:self.seen_cls].argmax(dim=-1)
+            pred = p[:, :self.seen_cls].argmax(dim=-1)
             correct += sum(pred == label).item()
             wrong += sum(pred != label).item()
         acc = correct / (wrong + correct)
-        logger.info("Test Acc: {}".format(acc*100))
+        logger.info("Test Acc: {}".format(acc * 100))
         self.model.train()
         logger.info("---------------------------------------------")
         return acc
+
+    def update_val_list(self):
+        self.num_learned_class = self.num_learning_class
+        # update memory list if needed
+
+        # random sample
+
+        k = self.memory_size // self.num_learning_class  # memory_size==500, num_learning_classes==20
+        tmp = [[] for _ in range(self.num_learning_class)]
+        for _ in self.val_list + self.memory_val_list:
+            tmp[_['label']].append(_)
+        self.val_list = []
+        for _ in tmp:
+            #    print(_)
+            self.memory_val_list.extend(_[:k])  # k==25
+
+        # 对每一个类别保存前k项，随着总类别数的增加，每个类别保存的数目也在减少
+
+    def after_task(self, cur_iter):
+        self.num_learned_class = self.num_learning_class
+        # update memory list if needed
+
+        # random sample
+
+        k = self.memory_size // self.num_learning_class  # memory_size==500, num_learning_classes==20
+        tmp = [[] for _ in range(self.num_learning_class)]
+        for _ in self.memory_list + self.train_list:
+            tmp[_['label']].append(_)
+        self.memory_list = []
+        for _ in tmp:
+            #    print(_)
+            self.memory_list.extend(_[:k])  # k==25
+
+    def update_val_list(self):
+        self.num_learned_class = self.num_learning_class
+        # update memory list if needed
+
+        # random sample
+
+        k = self.memory_size // self.num_learning_class  # memory_size==500, num_learning_classes==20
+        tmp = [[] for _ in range(self.num_learning_class)]
+        for _ in self.val_list + self.memory_val_list:
+            tmp[_['label']].append(_)
+        self.val_list = []
+        for _ in tmp:
+            #    print(_)
+            self.memory_val_list.extend(_[:k])  # k==25
+
+        # 对每一个类别保存前k项，随着总类别数的增加，每个类别保存的数目也在减少
